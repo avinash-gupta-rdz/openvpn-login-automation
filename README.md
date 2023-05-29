@@ -32,6 +32,12 @@ go get github.com/howeyc/gopass
     ```bash
     go run main.go
     ```
+4. to build
+    ```bash
+    GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o openvpn-otp-automation
+
+    ```
+
 
 Remember to replace `username` with your actual GitHub username.
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -9,13 +10,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"golang.org/x/crypto/ssh/terminal"
 	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-"bytes"
-	"golang.org/x/crypto/ssh/terminal"
 
 	"github.com/howeyc/gopass"
 )
@@ -32,7 +32,36 @@ func main() {
 		fmt.Println("cannot find user home directory:", err)
 		return
 	}
+	var command string
+	if len(os.Args) > 1 {
+		command = os.Args[1]
+	}
+	if command == "disconnect" {
+		err = disconnectOpenVPNSessions()
+		if err != nil {
+			fmt.Println("cannot disconnect OpenVPN sessions:", err)
+			return
+		}
+		fmt.Println("OpenVPN sessions disconnected successfully")
+		return
+	}
 	configPath := filepath.Join(home, ".openvpn_autoconnect_config.json")
+	if command == "reset" {
+		//delete config file
+		err = os.Remove(configPath)
+		if err != nil {
+			fmt.Println("cannot delete config file:", err)
+			return
+		}
+	}
+	if command == "help" {
+		fmt.Println("Usage: openvpn-autoconnect [command]")
+		fmt.Println("Commands:")
+		fmt.Println("  help       Show this help message")
+		fmt.Println("  reset      Reset the configuration")
+		fmt.Println("  disconnect Disconnect OpenVPN sessions")
+		return
+	}
 
 	var config Config
 	if _, err := os.Stat(configPath); err == nil {
@@ -109,22 +138,10 @@ func main() {
 	}
 	password += string(otp)
 
-	cmd := exec.Command("openvpn3", "session-start", "--config", config.Config)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		fmt.Println("cannot get stdin pipe:", err)
-		return
-	}
+	err = disconnectOpenVPNSessions()
 
-	go func() {
-		defer stdin.Close()
-		io.WriteString(stdin, config.Username+"\n")
-		io.WriteString(stdin, password+"\n")
-	}()
-
-	err = cmd.Run()
-	if err != nil {
-		fmt.Println("command failed:", err)
+	err, done := startOpenVPN(config, err, password)
+	if done {
 		return
 	}
 
@@ -139,6 +156,30 @@ func main() {
 		fmt.Println("cannot write config file:", err)
 		return
 	}
+}
+
+func startOpenVPN(config Config, err error, password string) (error, bool) {
+	cmd := exec.Command("openvpn3", "session-start", "--config", config.Config)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		fmt.Println("cannot get stdin pipe:", err)
+		return nil, true
+	}
+
+	go func() {
+		defer stdin.Close()
+		io.WriteString(stdin, config.Username+"\n")
+		io.WriteString(stdin, password+"\n")
+	}()
+
+	err = cmd.Run()
+	if err != nil {
+		fmt.Println("Failed to start the OpenVPN session::", err)
+		return nil, true
+	} else {
+		fmt.Println("OpenVPN session started successfully")
+	}
+	return err, false
 }
 
 func getMacAddress() string {
@@ -193,4 +234,25 @@ func decrypt(key, ciphertext []byte) (string, error) {
 	cipher.NewCFBDecrypter(block, iv).XORKeyStream(ciphertext, ciphertext)
 
 	return string(ciphertext), nil
+}
+
+func disconnectOpenVPNSessions() error {
+	// Prepare the command
+	fmt.Println("Disconnecting any existing OpenVPN sessions")
+	cmd := exec.Command("/bin/bash", "-c", `openvpn3 sessions-list | grep Path | awk -v OFS='\t' '{print $2}' | while read -r path; do openvpn3 session-manage --path "$path" --disconnect; done`)
+
+	// Run the command and capture any error
+	var out bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		fmt.Println(fmt.Sprint(err) + ": " + stderr.String())
+		return err
+	}
+
+	// Output the result
+	fmt.Println("Result: " + out.String())
+	return nil
 }
